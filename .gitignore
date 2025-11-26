@@ -1,0 +1,23 @@
+__pycache__/
+.venv/
+.env
+.pytest_cache/
+.ipynb_checkpoints/
+
+# DVC
+.dvc/tmp/
+.dvc/cache/
+
+# Data
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Models and artifacts
+models/*
+!models/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+
+
