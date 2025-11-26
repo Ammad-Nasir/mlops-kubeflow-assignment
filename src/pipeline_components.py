@@ -1,6 +1,5 @@
 import os
 import json
-from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -12,14 +11,12 @@ from sklearn.metrics import mean_squared_error, r2_score
 import joblib
 
 from kfp import dsl
-
+from kfp.v2.dsl import OutputPath  # <-- important
 
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
-
 def load_and_save_boston_csv(output_path: str) -> str:
-    """Utility: download/load Boston housing and save as CSV for DVC tracking."""
     _ensure_dir(os.path.dirname(output_path))
     boston = load_boston()
     df = pd.DataFrame(boston.data, columns=boston.feature_names)
@@ -27,38 +24,23 @@ def load_and_save_boston_csv(output_path: str) -> str:
     df.to_csv(output_path, index=False)
     return output_path
 
-
 @dsl.component(base_image="python:3.10-slim")
 def data_extraction_component(dvc_remote_url: str, output_csv_path: str) -> str:
-    """Fetch versioned dataset using DVC (expected to be configured in the image).
-
-    In practice, this would run `dvc pull` or `dvc get`. Here we assume the data
-    is already present in the container image or mounted volume.
-    """
-    import os
-
     if not os.path.exists(output_csv_path):
         raise FileNotFoundError(
             f"Expected dataset at {output_csv_path}. "
-            "In your environment, fetch it with `dvc get` or `dvc pull` before running."
+            "Fetch it with `dvc get` or `dvc pull` before running."
         )
     return output_csv_path
-
 
 @dsl.component(base_image="python:3.10-slim")
 def data_preprocessing_component(
     input_csv_path: str,
     test_size: float = 0.2,
     random_state: int = 42,
-    output_train_path: str = "data/processed/train.npy",
-    output_test_path: str = "data/processed/test.npy",
-) -> Tuple[str, str]:
-    import numpy as np
-    import pandas as pd
-    from sklearn.model_selection import train_test_split
-    from sklearn.preprocessing import StandardScaler
-    import os
-
+    output_train_path: OutputPath('NPY') = "data/processed/train.npy",
+    output_test_path: OutputPath('NPY') = "data/processed/test.npy",
+):
     os.makedirs(os.path.dirname(output_train_path), exist_ok=True)
     os.makedirs(os.path.dirname(output_test_path), exist_ok=True)
 
@@ -76,9 +58,6 @@ def data_preprocessing_component(
 
     np.save(output_train_path, {"X": X_train_scaled, "y": y_train})
     np.save(output_test_path, {"X": X_test_scaled, "y": y_test})
-
-    return output_train_path, output_test_path
-
 
 @dsl.component(base_image="python:3.10-slim")
 def model_training_component(
@@ -104,17 +83,15 @@ def model_training_component(
         n_jobs=-1,
     )
     model.fit(X_train, y_train)
-
     joblib.dump(model, model_output_path)
     return model_output_path
-
 
 @dsl.component(base_image="python:3.10-slim")
 def model_evaluation_component(
     model_path: str,
     test_path: str,
-    metrics_output_path: str = "artifacts/metrics.json",
-) -> str:
+    metrics_output_path: OutputPath('JSON') = "artifacts/metrics.json",
+):
     import numpy as np
     import joblib
     import json
@@ -136,13 +113,8 @@ def model_evaluation_component(
     with open(metrics_output_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    return metrics_output_path
-
-
 if __name__ == "__main__":
-    # Helper script to compile components to YAML in ../components
     from kfp import components
-
     components_dir = os.path.join(os.path.dirname(__file__), "..", "components")
     _ensure_dir(components_dir)
 
@@ -156,5 +128,3 @@ if __name__ == "__main__":
         yaml_path = os.path.join(components_dir, f"{name}_component.yaml")
         comp.save(yaml_path)
         print(f"Saved component {name} to {yaml_path}")
-
-
