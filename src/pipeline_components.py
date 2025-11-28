@@ -1,17 +1,4 @@
-import os
-import json
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-import joblib
-
 from kfp import dsl
-from kfp.dsl import InputPath, OutputPath
-
-
 from pipeline_components import (
     data_extraction_component,
     data_preprocessing_component,
