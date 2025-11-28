@@ -1,118 +1,96 @@
-import os
-import json
-
-import numpy as np
-import pandas as pd
-from sklearn.datasets import fetch_california_housing
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-import joblib
-
 from kfp import dsl
-from kfp.v2.dsl import OutputPath  # <-- important
+from kfp.dsl import InputPath, OutputPath
 
-def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+# ---------------------------------------------------------
+# 1. DATA EXTRACTION COMPONENT
+# ---------------------------------------------------------
+@dsl.component
+def data_extraction_component(dvc_url: str, output_csv_path: OutputPath(str)):
+    import pandas as pd
+    import os
+    import subprocess
 
-def load_and_save_california_csv(output_path: str) -> str:
-    """Load California housing dataset and save as CSV."""
-    _ensure_dir(os.path.dirname(output_path))
-    housing = fetch_california_housing(as_frame=True)
-    df = housing.frame
-    df.to_csv(output_path, index=False)
-    return output_path
+    repo_name = "housing_repo"
 
-@dsl.component(base_image="python:3.10-slim")
-def data_extraction_component(output_csv_path: str) -> str:
-    """Ensure dataset exists at output_csv_path."""
-    if not os.path.exists(output_csv_path):
-        load_and_save_california_csv(output_csv_path)
-    return output_csv_path
+    # Clone if not exists
+    if not os.path.exists(repo_name):
+        subprocess.run(["git", "clone", dvc_url, repo_name], check=True)
 
-@dsl.component(base_image="python:3.10-slim")
+    # Pull data with DVC
+    subprocess.run(["dvc", "pull"], cwd=repo_name, check=True)
+
+    # Read CSV
+    csv_path = os.path.join(repo_name, "data/raw/housing.csv")
+    df = pd.read_csv(csv_path)
+
+    df.to_csv(output_csv_path, index=False)
+
+
+# ---------------------------------------------------------
+# 2. DATA PREPROCESSING COMPONENT
+# ---------------------------------------------------------
+@dsl.component
 def data_preprocessing_component(
-    input_csv_path: str,
-    test_size: float = 0.2,
-    random_state: int = 42,
-    output_train_path: OutputPath('NPY') = "data/processed/train.npy",
-    output_test_path: OutputPath('NPY') = "data/processed/test.npy",
+    input_csv_path: InputPath(str),
+    output_train_path: OutputPath(str),
+    output_test_path: OutputPath(str)
 ):
-    os.makedirs(os.path.dirname(output_train_path), exist_ok=True)
-    os.makedirs(os.path.dirname(output_test_path), exist_ok=True)
+    import pandas as pd
+    from sklearn.model_selection import train_test_split
 
     df = pd.read_csv(input_csv_path)
-    X = df.drop("MedHouseVal", axis=1).values  # target column in California dataset
-    y = df["MedHouseVal"].values
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    train_df.to_csv(output_train_path, index=False)
+    test_df.to_csv(output_test_path, index=False)
 
-    np.save(output_train_path, {"X": X_train_scaled, "y": y_train})
-    np.save(output_test_path, {"X": X_test_scaled, "y": y_test})
 
-@dsl.component(base_image="python:3.10-slim")
+# ---------------------------------------------------------
+# 3. TRAINING COMPONENT
+# ---------------------------------------------------------
+@dsl.component
 def model_training_component(
-    train_path: str,
-    n_estimators: int = 100,
-    max_depth: int = 5,
-    model_output_path: OutputPath('MLModel') = "models/random_forest.joblib",
+    train_path: InputPath(str),
+    output_model_path: OutputPath(str)
 ):
-    os.makedirs(os.path.dirname(model_output_path), exist_ok=True)
+    import pandas as pd
+    from sklearn.linear_model import LinearRegression
+    import joblib
 
-    data = np.load(train_path, allow_pickle=True).item()
-    X_train, y_train = data["X"], data["y"]
+    df = pd.read_csv(train_path)
 
-    model = RandomForestRegressor(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        random_state=42,
-        n_jobs=-1,
-    )
-    model.fit(X_train, y_train)
-    joblib.dump(model, model_output_path)
+    X = df.drop("median_house_value", axis=1)
+    y = df["median_house_value"]
 
-@dsl.component(base_image="python:3.10-slim")
+    model = LinearRegression()
+    model.fit(X, y)
+
+    joblib.dump(model, output_model_path)
+
+
+# ---------------------------------------------------------
+# 4. EVALUATION COMPONENT
+# ---------------------------------------------------------
+@dsl.component
 def model_evaluation_component(
-    model_path: str,
-    test_path: str,
-    metrics_output_path: OutputPath('JSON') = "artifacts/metrics.json",
+    model_path: InputPath(str),
+    test_path: InputPath(str),
+    output_metrics_path: OutputPath(str)
 ):
-    os.makedirs(os.path.dirname(metrics_output_path), exist_ok=True)
+    import pandas as pd
+    import joblib
+    from sklearn.metrics import mean_squared_error
 
-    data = np.load(test_path, allow_pickle=True).item()
-    X_test, y_test = data["X"], data["y"]
+    df = pd.read_csv(test_path)
+
+    X = df.drop("median_house_value", axis=1)
+    y = df["median_house_value"]
 
     model = joblib.load(model_path)
-    preds = model.predict(X_test)
 
-    mse = float(mean_squared_error(y_test, preds))
-    r2 = float(r2_score(y_test, preds))
+    preds = model.predict(X)
+    mse = mean_squared_error(y, preds)
 
-    metrics = {"mse": mse, "r2": r2}
-    with open(metrics_output_path, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
-
-if __name__ == "__main__":
-    from kfp.v2 import components
-
-    components_dir = os.path.join(os.path.dirname(__file__), "..", "components")
-    _ensure_dir(components_dir)
-
-    for func, name in [
-        (data_extraction_component, "data_extraction"),
-        (data_preprocessing_component, "data_preprocessing"),
-        (model_training_component, "model_training"),
-        (model_evaluation_component, "model_evaluation"),
-    ]:
-        yaml_path = os.path.join(components_dir, f"{name}_component.yaml")
-        components.OutputPath(yaml_path)
-        # compile the component
-        components.create_component_from_func(func, output_component_file=yaml_path)
-        print(f"Saved component {name} to {yaml_path}")
+    with open(output_metrics_path, "w") as f:
+        f.write(f"MSE: {mse}")
